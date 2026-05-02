@@ -1,34 +1,36 @@
 """ChromaComfort integration."""
 
-from homeassistant.core import HomeAssistant
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from datetime import timedelta
 import logging
 
-from .const import DOMAIN
+from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+from .const import DOMAIN, DEFAULT_POLL_INTERVAL
 from .ble import ChromaComfortBLE
-from .fan import ChromaComfortFan
-from .light import ChromaComfortLight
-from .switch import ChromaComfortSwitch
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["fan", "light", "switch"]
 
-async def async_setup(hass: HomeAssistant, config: dict):
-    hass.data.setdefault(DOMAIN, {})
-    return True
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
+    """Set up ChromaComfort from a config entry."""
     mac = entry.data["device_mac"]
-    poll_interval = entry.data.get("poll_interval", 5)
+    poll_interval = entry.data.get("poll_interval", DEFAULT_POLL_INTERVAL)
 
     ble_client = ChromaComfortBLE(mac)
-    await ble_client.connect()
+
+    if not await ble_client.connect():
+        _LOGGER.error("Failed to connect to device during setup")
+        return False
 
     async def async_update_data():
+        """Fetch latest state (placeholder - improve with real status read if device supports)."""
         try:
-            return await ble_client.get_status()
+            # Device may not support status read easily. For now return basic state.
+            # You can extend this with notify or read_gatt_char if available.
+            return {"available": True}
         except Exception as err:
             raise UpdateFailed(f"Error fetching data: {err}")
 
@@ -42,26 +44,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data[DOMAIN]["coordinator"] = coordinator
-    hass.data[DOMAIN]["ble_client"] = ble_client
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "coordinator": coordinator,
+        "ble_client": ble_client,
+    }
 
-    for platform in PLATFORMS:
-        hass.async_create_task(
-            hass.config_entries.async_forward_entry_setup(entry, platform)
-        )
-
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
-    unload_ok = []
-    for platform in PLATFORMS:
-        result = await hass.config_entries.async_forward_entry_unload(entry, platform)
-        unload_ok.append(result)
+    """Unload a config entry."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    ble_client: ChromaComfortBLE = hass.data[DOMAIN].get("ble_client")
-    if ble_client:
-        await ble_client.disconnect()
+    data = hass.data[DOMAIN].get(entry.entry_id)
+    if data:
+        await data["ble_client"].disconnect()
+        hass.data[DOMAIN].pop(entry.entry_id)
 
-    hass.data[DOMAIN].pop("coordinator", None)
-    hass.data[DOMAIN].pop("ble_client", None)
-    return all(unload_ok)
+    return unload_ok

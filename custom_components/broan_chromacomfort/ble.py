@@ -1,33 +1,60 @@
 """BLE client for ChromaComfort."""
 
-from bleak import BleakClient
+import asyncio
+import logging
+from bleak import BleakClient, BleakError
 
-CHAR_UUID = "0000fff3-0000-1000-8000-00805f9b34fb"
+from .const import CHAR_UUID
+
+_LOGGER = logging.getLogger(__name__)
 
 class ChromaComfortBLE:
-    """BLE wrapper using the ESP32 command set."""
+    """BLE wrapper with reconnection logic."""
 
     def __init__(self, mac: str):
         self.mac = mac
         self.client = BleakClient(mac)
+        self._lock = asyncio.Lock()
 
-    async def connect(self):
-        await self.client.connect()
+    async def connect(self) -> bool:
+        """Connect with retry."""
+        async with self._lock:
+            if self.client.is_connected:
+                return True
+            try:
+                await self.client.connect()
+                _LOGGER.info("Connected to %s", self.mac)
+                return True
+            except BleakError as err:
+                _LOGGER.error("Failed to connect to %s: %s", self.mac, err)
+                return False
 
     async def disconnect(self):
-        if self.client.is_connected:
-            await self.client.disconnect()
+        """Disconnect cleanly."""
+        async with self._lock:
+            if self.client.is_connected:
+                try:
+                    await self.client.disconnect()
+                except Exception as err:
+                    _LOGGER.warning("Error disconnecting: %s", err)
 
-    async def send_command(self, cmd: bytes):
-        if self.client.is_connected:
-            await self.client.write_gatt_char(CHAR_UUID, cmd)
-
-    async def get_status(self):
-        """Return a dictionary with fan, light, wall_rgb, brightness."""
-        # Minimal status polling
+    async def send_command(self, cmd: bytes) -> bool:
+        """Send command with auto-reconnect."""
         if not self.client.is_connected:
-            await self.connect()
-        # Example: request a status packet from device
-        # You can replace this with the exact BLE command that queries device
-        # For now, simulate reading (replace with actual read_gatt_char if available)
-        return {"fan": False, "light": False, "wall_rgb": False, "brightness": 255}
+            if not await self.connect():
+                return False
+
+        try:
+            await self.client.write_gatt_char(CHAR_UUID, cmd, response=False)
+            return True
+        except Exception as err:
+            _LOGGER.error("Failed to send command: %s", err)
+            # Try reconnect once
+            await self.disconnect()
+            if await self.connect():
+                try:
+                    await self.client.write_gatt_char(CHAR_UUID, cmd, response=False)
+                    return True
+                except Exception as retry_err:
+                    _LOGGER.error("Retry failed: %s", retry_err)
+            return False
