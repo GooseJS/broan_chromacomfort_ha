@@ -6,9 +6,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 
 from .const import DOMAIN
-from .ble import ChromaComfortBLE  # for type hint if needed
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities
+):
     data = hass.data[DOMAIN][entry.entry_id]
     ble_client = data["ble_client"]
     coordinator = data["coordinator"]
@@ -27,6 +28,8 @@ class ChromaComfortFan(CoordinatorEntity, FanEntity):
         super().__init__(coordinator)
         self._ble = ble_client
         self._attr_unique_id = f"{entry.entry_id}_fan"
+        self._is_on = False
+
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
             "name": entry.title,
@@ -36,22 +39,18 @@ class ChromaComfortFan(CoordinatorEntity, FanEntity):
 
     @property
     def is_on(self) -> bool | None:
-        # Update this when you implement real status feedback
-        return getattr(self.coordinator.data, "fan_on", False) if self.coordinator.data else False
+        return self._is_on
 
     async def async_turn_on(self, **kwargs):
         """Turn the fan on."""
+        self._is_on = True
         cmd = bytes([0x3A, 0x00, 0x00, 0x00, 0x01] + [0x00] * 12)
         if await self._ble.send_command(cmd):
-            # Optimistically update
-            if self.coordinator.data:
-                self.coordinator.data["fan_on"] = True
             self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs):
         """Turn the fan off."""
+        self._is_on = False
         cmd = bytes([0x3A, 0x00, 0x00, 0x00, 0x02] + [0x00] * 12)
         if await self._ble.send_command(cmd):
-            if self.coordinator.data:
-                self.coordinator.data["fan_on"] = False
             self.async_write_ha_state()
